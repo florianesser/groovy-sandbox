@@ -305,7 +305,7 @@ x.plusOne(5)
     void testClosureDelegation() {
         // TODO: ideally we should be seeing String.length()
         // doing so requires a call site selection and deconstruction
-        assertIntercept("Script1.c()/Script1\$_run_closure1.length()", 3, """
+        assertIntercept("Script1.c()/Script1\$_run_closure1.delegate=String/Script1\$_run_closure1.length()", 3, """
             def x = 0;
             c = { ->
                 delegate = "foo";
@@ -320,7 +320,7 @@ x.plusOne(5)
     void testClosureDelegationOwner() {
         // TODO: ideally we should be seeing String.length()
         // doing so requires a call site selection and deconstruction
-        assertIntercept("Script1.c()/Script1\$_run_closure1_closure2.call()/Script1\$_run_closure1_closure2.length()", 3, """
+        assertIntercept("Script1.c()/Script1\$_run_closure1.delegate=String/Script1\$_run_closure1_closure2.call()/Script1\$_run_closure1_closure2.length()", 3, """
             def x = 0;
             c = { ->
                 delegate = "foo";
@@ -335,7 +335,7 @@ x.plusOne(5)
     void testClosureDelegationProperty() {
         // TODO: ideally we should be seeing String.length()
         // doing so requires a call site selection and deconstruction
-        assertIntercept("Script1.c()/new SomeBean(Integer,Integer)/Integer.plus(Integer)", 3, """
+        assertIntercept("Script1.c()/new SomeBean(Integer,Integer)/Script1\$_run_closure1.delegate=SomeBean/Script1\$_run_closure1.x/Script1\$_run_closure1.y/Integer.plus(Integer)", 3, """
             def sum = 0;
             c = { ->
                 delegate = new SomeBean(1,2);
@@ -350,7 +350,7 @@ x.plusOne(5)
     void testClosureDelegationPropertyOwner() {
         // TODO: ideally we should be seeing String.length()
         // doing so requires a call site selection and deconstruction
-        assertIntercept("Script1.c()/new SomeBean(Integer,Integer)/Script1\$_run_closure1_closure2.call()/Integer.plus(Integer)", 3, """
+        assertIntercept("Script1.c()/new SomeBean(Integer,Integer)/Script1\$_run_closure1.delegate=SomeBean/Script1\$_run_closure1_closure2.call()/Script1\$_run_closure1_closure2.x/Script1\$_run_closure1_closure2.y/Integer.plus(Integer)", 3, """
             def sum = 0;
             c = { ->
                 delegate = new SomeBean(1,2);

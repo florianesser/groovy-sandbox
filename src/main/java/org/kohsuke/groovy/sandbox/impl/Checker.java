@@ -1,8 +1,13 @@
 package org.kohsuke.groovy.sandbox.impl;
 
+import groovy.lang.Closure;
+import groovy.lang.DelegatingMetaClass;
 import groovy.lang.MetaClass;
 import groovy.lang.MetaClassImpl;
 import groovy.lang.MetaMethod;
+import groovy.lang.MissingPropertyException;
+import groovy.lang.Script;
+
 import org.codehaus.groovy.classgen.asm.BinaryExpressionHelper;
 import org.codehaus.groovy.runtime.InvokerHelper;
 import org.codehaus.groovy.runtime.ScriptBytecodeAdapter;
@@ -69,6 +74,8 @@ public class Checker {
 
             if (_receiver instanceof Class) {
                 MetaClass mc = InvokerHelper.getMetaClass((Class)_receiver);
+                while (mc instanceof DelegatingMetaClass)
+                    mc = ((DelegatingMetaClass) mc).getAdaptee();
                 if (mc instanceof MetaClassImpl) {
                     MetaClassImpl mci = (MetaClassImpl) mc;
                     MetaMethod m = mci.retrieveStaticMethod(_method,_args);
@@ -332,6 +339,78 @@ public class Checker {
                 }
             }
         }.call(lhs, null, rhs);
+    }
+
+    public static boolean checkDynamicVariableAccess(Object _implicitThis, String _variableName, boolean isSet) {
+        if(hasProperty(_implicitThis, _variableName)) {
+            if(_implicitThis instanceof Closure)
+                _implicitThis = getPropertyReceiver((Closure<?>)_implicitThis, _variableName);
+            return !(_implicitThis instanceof Script) || InvokerHelper.getMetaClass(_implicitThis).hasProperty(_implicitThis, _variableName) != null;
+        } else
+            return false;
+    }
+
+    private static Object getPropertyReceiver(Closure<?> _receiver, String _property)
+    {
+        Object receiver = _receiver;
+        while(true) {
+            if(!(receiver instanceof Closure))
+                break;
+            if(InvokerHelper.getMetaClass(_receiver).hasProperty(_receiver, _property) != null)
+                return _receiver;
+            Closure<?> closure = (Closure<?>)receiver;
+            Object delegate = closure.getDelegate();
+            Object owner = closure.getOwner();
+            switch(closure.getResolveStrategy()) {
+            case Closure.DELEGATE_FIRST:
+                if(delegate != null && hasProperty(delegate, _property)) {
+                    receiver = delegate;
+                    continue;
+                }
+                // fall through
+            case Closure.OWNER_ONLY:
+                if(hasProperty(owner, _property))
+                    receiver = owner;
+                else
+                    receiver = null;
+                break;
+            case Closure.DELEGATE_ONLY:
+                if(delegate != null && hasProperty(delegate, _property))
+                    receiver = delegate;
+                else
+                    receiver = null;
+                break;
+            case Closure.TO_SELF:
+                receiver = null;
+                break;
+            default: // Closure.OWNER_FIRST
+                if(hasProperty(owner, _property))
+                    receiver = owner;
+                else if(delegate != null && hasProperty(delegate, _property))
+                    receiver = delegate;
+                else
+                    receiver = null;
+                break;
+            }
+        }
+        if(receiver == null)
+            return _receiver;
+        else
+            return receiver;
+    }
+
+    private static boolean hasProperty(Object object, String property){
+        if(InvokerHelper.getMetaClass(object).hasProperty(object, property) != null)
+            return true;
+        
+        // The only way to make sure, that a property is indeed a property in Groovy is by
+        // accessing it. Could have side-effects, but for our usage it's alright!
+        try {
+            InvokerHelper.getProperty(object, property);
+            return true;
+        } catch(MissingPropertyException e) {
+            return false;
+        }
     }
 
     /**

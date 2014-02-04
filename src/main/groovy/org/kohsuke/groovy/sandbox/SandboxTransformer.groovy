@@ -2,8 +2,10 @@ package org.kohsuke.groovy.sandbox
 
 import org.codehaus.groovy.ast.ClassCodeExpressionTransformer
 import org.codehaus.groovy.ast.ClassNode
+import org.codehaus.groovy.ast.DynamicVariable;
 import org.codehaus.groovy.ast.expr.ArgumentListExpression
 import org.codehaus.groovy.ast.expr.AttributeExpression
+import org.codehaus.groovy.ast.expr.BooleanExpression
 import org.codehaus.groovy.ast.expr.ClassExpression
 import org.codehaus.groovy.ast.expr.ClosureExpression
 import org.codehaus.groovy.ast.expr.ConstantExpression
@@ -13,6 +15,7 @@ import org.codehaus.groovy.ast.expr.MethodCallExpression
 import org.codehaus.groovy.ast.expr.MethodPointerExpression
 import org.codehaus.groovy.ast.expr.PropertyExpression
 import org.codehaus.groovy.ast.expr.StaticMethodCallExpression
+import org.codehaus.groovy.ast.expr.TernaryExpression
 import org.codehaus.groovy.ast.expr.TupleExpression
 import org.codehaus.groovy.classgen.GeneratorContext
 import org.codehaus.groovy.control.CompilePhase
@@ -103,7 +106,8 @@ class SandboxTransformer extends CompilationCustomizer {
         def ast = source.getAST();
         def visitor = new VisitorImpl(source);
 
-        ast.methods?.each { visitor.visitMethod(it) }
+        // ast.methods is covered by classNode.methods!
+        //ast.methods?.each { visitor.visitMethod(it) }
         classNode?.declaredConstructors?.each { visitor.visitMethod(it) }
         classNode?.methods?.each { visitor.visitMethod(it) }
         classNode?.objectInitializerStatements?.each { it.visit(visitor) }
@@ -243,7 +247,7 @@ class SandboxTransformer extends CompilationCustomizer {
 
             if (exp instanceof AttributeExpression && interceptAttribute) {
                 return makeCheckedCall("checkedGetAttribute", [
-                    transform(exp.objectExpression),
+                    transformObjectExpression(exp),
                     boolExp(exp.safe),
                     boolExp(exp.spreadSafe),
                     transform(exp.property)
@@ -259,9 +263,36 @@ class SandboxTransformer extends CompilationCustomizer {
                 ])
             }
 
+            if (exp instanceof VariableExpression) {
+                VariableExpression ve = (VariableExpression) exp;
+                // We don't care what sandboxed code does to itself until it starts interacting with outside world
+                // TODO: what looks like a variable expression could turn into a property access, so
+                // this needs to be intercepted and rewritten. See AsmClassGenerator.visitVariableExpression
+                // (which tracks in-scope variables)
+                // XXX currently assume it could be a property first
+                if (ve.getAccessedVariable() instanceof DynamicVariable) {
+                    Expression thisObject = visitingClosureBody ? CLOSURE_THIS : new VariableExpression("this");
+                    BooleanExpression checkExpression = new BooleanExpression(makeCheckedCall("checkDynamicVariableAccess", [
+                            thisObject,
+                            new ConstantExpression(ve.getName()),
+                            boolExp(false)
+                    ]));
+                    Expression checkedGet = makeCheckedCall("checkedGetProperty", [
+                            thisObject,
+                            boolExp(true),
+                            boolExp(false),
+                            new ConstantExpression(ve.getName())
+                    ]);
+                    Expression uncheckedGet = ve;
+                    TernaryExpression ternary = new TernaryExpression(checkExpression, checkedGet, uncheckedGet);
+                    return ternary;
+                }
+            }
+
             if (exp instanceof BinaryExpression) {
+                BinaryExpression be = (BinaryExpression) exp;
                 // this covers everything from a+b to a=b
-                if (ofType(exp.operation.type,ASSIGNMENT_OPERATOR)) {
+                if (ofType(be.operation.type,ASSIGNMENT_OPERATOR)) {
                     // simple assignment like '=' as well as compound assignments like "+=","-=", etc.
 
                     // How we dispatch this depends on the type of left expression.
@@ -269,7 +300,7 @@ class SandboxTransformer extends CompilationCustomizer {
                     // What can be LHS?
                     // according to AsmClassGenerator, PropertyExpression, AttributeExpression, FieldExpression, VariableExpression
 
-                    Expression lhs = exp.leftExpression;
+                    Expression lhs = be.leftExpression;
                     if (lhs instanceof PropertyExpression) {
                         def name = null;
                         if (lhs instanceof AttributeExpression) {
@@ -287,8 +318,8 @@ class SandboxTransformer extends CompilationCustomizer {
                                 lhs.property,
                                 boolExp(lhs.safe),
                                 boolExp(lhs.spreadSafe),
-                                intExp(exp.operation.type),
-                                transform(exp.rightExpression),
+                                intExp(be.operation.type),
+                                transform(be.rightExpression),
                         ])
                     } else
                     if (lhs instanceof FieldExpression) {
@@ -298,11 +329,34 @@ class SandboxTransformer extends CompilationCustomizer {
                         return super.transform(exp);
                     } else
                     if (lhs instanceof VariableExpression) {
+                        VariableExpression ve = (VariableExpression) lhs;
                         // We don't care what sandboxed code does to itself until it starts interacting with outside world
                         // TODO: what looks like a variable expression could turn into a property access, so
                         // this needs to be intercepted and rewritten. See AsmClassGenerator.visitVariableExpression
                         // (which tracks in-scope variables)
-                        return super.transform(exp);
+                        // XXX currently assume it could be a property first
+                        if (ve.getAccessedVariable() instanceof DynamicVariable) {
+                            Expression thisObject = visitingClosureBody ? CLOSURE_THIS : new VariableExpression("this");
+                            BooleanExpression checkExpression = new BooleanExpression(makeCheckedCall("checkDynamicVariableAccess", [
+                                    thisObject,
+                                    new ConstantExpression(ve.getName()),
+                                    boolExp(true)
+                            ]));
+                            Expression rightExpression = transform(be.rightExpression);
+                            Expression checkedSet = makeCheckedCall("checkedSetProperty", [
+                                    thisObject,
+                                    new ConstantExpression(ve.getName()),
+                                    boolExp(true),
+                                    boolExp(false),
+                                    intExp(be.getOperation().getType()),
+                                    rightExpression
+                            ]);
+                            Expression uncheckedSet = be;
+                            uncheckedSet.rightExpression = rightExpression;
+                            TernaryExpression ternary = new TernaryExpression(checkExpression, checkedSet, uncheckedSet);
+                            return ternary;
+                        } else
+                            return super.transform(be);
                     } else
                     if (lhs instanceof BinaryExpression) {
                         if (lhs.operation.type==Types.LEFT_SQUARE_BRACKET && interceptArray) {// expression of the form "x[y] = z"
